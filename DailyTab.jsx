@@ -244,6 +244,9 @@ export default function App() {
     // also set page background so there's no flash
     document.body.style.background = vars["--dt-bg"] || "";
   }, [theme, sysDark]);
+
+  useEffect(() => {
+    (async () => {
       const p   = await sGet(`dt_p:${vm}`,   []);
       const pay = await sGet(`dt_pay:${vm}`, {});
       setPurchR(prev => ({ ...prev, [vm]: p||[] }));
@@ -265,6 +268,7 @@ export default function App() {
   const setPM = async (m, arr) => { setPurchR(p => ({ ...p, [m]: arr })); await sSet(`dt_p:${m}`, arr); };
   const setPyM = async (m, obj) => { setPaysR(p => ({ ...p, [m]: obj })); await sSet(`dt_pay:${m}`, obj); };
   const setTheme = async v => { setThemeR(v); await sSet("dt_theme", v); };
+  const applyCurrency = async v => {
     const sym = (v || "₹").trim();
     setCurrR(sym);
     await sSet("dt_cur", sym);
