@@ -34,8 +34,8 @@ const PALETTE = ["#f97316","#06b6d4","#8b5cf6","#22c55e","#ec4899","#eab308","#1
 const DOW     = ["Su","Mo","Tu","We","Th","Fr","Sa"];
 
 const uid    = () => Math.random().toString(36).slice(2, 9);
-const today  = () => new Date().toISOString().slice(0, 10);
-const curMon = () => new Date().toISOString().slice(0, 7);
+const today  = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
+const curMon = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; };
 
 function prevMon(m) { const [y,mo]=m.split("-").map(Number); return mo===1?`${y-1}-12`:`${y}-${String(mo-1).padStart(2,"0")}`; }
 function nextMon(m) { const [y,mo]=m.split("-").map(Number); return mo===12?`${y+1}-01`:`${y}-${String(mo+1).padStart(2,"0")}`; }
