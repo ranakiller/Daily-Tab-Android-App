@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { initializeApp } from "firebase/app";
 import {
   getAuth, GoogleAuthProvider, signInWithPopup,
@@ -263,7 +263,7 @@ function App({ user }) {
   const [items,    setItemsR]   = useState([]);
   const [purch,    setPurchR]   = useState({ [CM]: [] });
   const [pays,     setPaysR]    = useState({ [CM]: {} });
-  const [currency, setCurrR]    = useState("₹");
+  const [currency, setCurrR]    = useState("Rs.");
   const [theme,    setThemeR]   = useState("system");
   const [sysDark,  setSysDark]  = useState(false);
 
@@ -296,7 +296,7 @@ function App({ user }) {
   const [niShop,      setNiShop]      = useState("");
   const [niName,      setNiName]      = useState("");
   const [niPrice,     setNiPrice]     = useState("");
-  const [currInp,     setCurrInp]     = useState("₹");
+  const [currInp,     setCurrInp]     = useState("Rs.");
   const [savedCurrs,  setSavedCurrs]  = useState([]);
   const [editP,       setEditP]       = useState({});
 
@@ -304,6 +304,14 @@ function App({ user }) {
   const [histExp, setHistExp] = useState("");
   const [summExp, setSummExp] = useState("");
   const [summPay, setSummPay] = useState({});
+
+  /* undo delete / quick-add / modal */
+  const [undoQueue,    setUndoQueue]    = useState([]);
+  const [qkLoading,    setQkLoading]    = useState({});
+  const [qkDone,       setQkDone]       = useState({});
+  const [modalShowAdd, setModalShowAdd] = useState(false);
+  const [shareMsg,     setShareMsg]     = useState("");
+  const purchRef = useRef(purch);
 
   const fmt = n => `${currency}${(+n||0).toFixed(2)}`;
 
@@ -314,12 +322,12 @@ function App({ user }) {
       const it  = await dbGet("dt_items",    []);
       const p   = await dbGet(`dt_p:${CM}`,  []);
       const pay = await dbGet(`dt_pay:${CM}`,{});
-      const cur = await dbGet("dt_cur",      "₹");
+      const cur = await dbGet("dt_cur",      "Rs.");
       const sc  = await dbGet("dt_scurrs",   []);
       const th  = await dbGet("dt_theme",    "system");
       setShopsR(s||[]); setItemsR(it||[]);
       setPurchR({ [CM]: p||[] }); setPaysR({ [CM]: pay||{} });
-      setCurrR(cur||"₹"); setCurrInp(cur||"₹");
+      setCurrR(cur||"Rs."); setCurrInp(cur||"Rs.");
       setSavedCurrs(sc||[]);
       setThemeR(th||"system");
       const first = (s||[])[0];
@@ -367,6 +375,20 @@ function App({ user }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [calMon]);
 
+  /* keep ref in sync with purch state so delete timers read current data */
+  useEffect(() => { purchRef.current = purch; }, [purch]);
+
+  /* ── midnight refresh: re-renders the app when the calendar day rolls over ── */
+  useEffect(() => {
+    const schedule = () => {
+      const now = new Date();
+      const ms  = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1) - now;
+      return setTimeout(() => { setLDate(today()); schedule(); }, ms);
+    };
+    const t = schedule();
+    return () => clearTimeout(t);
+  }, []);
+
   /* ── persist helpers ── */
   const setShops = async v => { setShopsR(v); await dbSet("dt_shops", v); };
   const setItems = async v => { setItemsR(v); await dbSet("dt_items", v); };
@@ -375,7 +397,7 @@ function App({ user }) {
   const setTheme = async v => { setThemeR(v); await dbSet("dt_theme", v); };
 
   const applyCurrency = async v => {
-    const sym = (v || "₹").trim();
+    const sym = (v || "Rs.").trim();
     setCurrR(sym);
     await dbSet("dt_cur", sym);
     setSavedCurrs(prev => {
@@ -417,7 +439,28 @@ function App({ user }) {
 
   const logPurch  = async () => { const name=lItem?(items.find(i=>i.id===lItem)?.name||lName):lName.trim(); await savePurch(lDate,lShop,lItem,name,lQty,lPrice,setLMsg,()=>{setLItem("");setLName("");setLQty("1");setLPrice("");}); };
   const modalSave = async () => { const name=mItem?(items.find(i=>i.id===mItem)?.name||mName):mName.trim(); await savePurch(modal.date,mShop,mItem,name,mQty,mPrice,setMMsg,()=>{setMItem("");setMName("");setMQty("1");setMPrice("");}); };
-  const delPurch  = async (m, id) => setPM(m, (purch[m]||[]).filter(p=>p.id!==id));
+  const delPurch = (m, id) => {
+    const entry = (purch[m]||[]).find(p => p.id === id);
+    if (!entry) return;
+    const newArr = (purch[m]||[]).filter(p => p.id !== id);
+    purchRef.current = { ...purchRef.current, [m]: newArr };
+    setPurchR(prev => ({ ...prev, [m]: newArr }));
+    const timerId = setTimeout(() => {
+      dbSet(`dt_p:${m}`, purchRef.current[m] || []);
+      setUndoQueue(q => q.filter(x => x.id !== id));
+    }, 5000);
+    setUndoQueue(q => [...q.filter(x => x.id !== id), { id, m, entry, timerId }]);
+  };
+
+  const undoDel = ({ id, m, entry, timerId }) => {
+    clearTimeout(timerId);
+    const restored = [...(purchRef.current[m]||[]), entry]
+      .sort((a,b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+    purchRef.current = { ...purchRef.current, [m]: restored };
+    setPurchR(prev => ({ ...prev, [m]: restored }));
+    dbSet(`dt_p:${m}`, restored);
+    setUndoQueue(q => q.filter(x => x.id !== id));
+  };
   const markPaid  = async (m, sid, amt) => { const cur=pays[m]||{}; await setPyM(m,{...cur,[sid]:(+(cur[sid]||0))+(+amt)}); setSummPay(p=>({...p,[sid]:""})); };
   const resetPaid = async (m, sid)      => { const cur=pays[m]||{}; await setPyM(m,{...cur,[sid]:0}); };
 
@@ -430,6 +473,45 @@ function App({ user }) {
   const sPaid    = (sid,m) => +(pym(m)[sid]||0);
   const sOwed    = (sid,m) => Math.max(0,sTot(sid,m)-sPaid(sid,m));
   const totalOwed = shops.reduce((a,s)=>a+sOwed(s.id,CM),0);
+
+  /* ── quick-add: top items by purchase frequency ── */
+  const topItems = useMemo(() => {
+    const freq = {};
+    Object.values(purch).forEach(arr => (arr||[]).forEach(p => {
+      if (!p.shopId || !p.itemName) return;
+      const key = `${p.shopId}||${p.itemName.toLowerCase().trim()}`;
+      if (!freq[key]) freq[key] = { shopId:p.shopId, itemName:p.itemName.trim(), price:p.price, count:0 };
+      freq[key].count++;
+      freq[key].price = p.price;
+    }));
+    return Object.values(freq).sort((a,b) => b.count - a.count).slice(0, 6);
+  }, [purch]);
+
+  const quickLog = async (shopId, itemName, price) => {
+    const key = `${shopId}||${itemName}`;
+    setQkLoading(l => ({...l, [key]: true}));
+    await savePurch(today(), shopId, null, itemName, 1, price, ()=>{}, ()=>{});
+    setQkLoading(l => ({...l, [key]: false}));
+    setQkDone(d => ({...d, [key]: true}));
+    setTimeout(() => setQkDone(d => ({...d, [key]: false})), 1800);
+  };
+
+  const shareMonth = () => {
+    const lines = shops.map(sh => {
+      const tot = sTot(sh.id, vm), paid = sPaid(sh.id, vm), owed = sOwed(sh.id, vm);
+      return `• ${sh.name}: Total ${fmt(tot)}, Paid ${fmt(paid)}, Owed ${fmt(owed)}${owed===0&&tot>0?" ✓":""}`;
+    }).join("\n");
+    const grandTotal  = vmP.reduce((a,p)=>a+p.total,0);
+    const totalOwedMon = shops.reduce((a,s)=>a+sOwed(s.id,vm),0);
+    const text = `📊 DailyTab — ${mLabel(vm)}\n\n${lines}\n\n💰 Grand Total: ${fmt(grandTotal)}\n📌 Still Owed: ${fmt(totalOwedMon)}`;
+    if (navigator.share) {
+      navigator.share({ text }).catch(()=>{});
+    } else {
+      navigator.clipboard?.writeText(text);
+      setShareMsg("Copied to clipboard!");
+      setTimeout(() => setShareMsg(""), 2500);
+    }
+  };
 
   const pickItem = (id, setItm, setPrc) => {
     setItm(id);
@@ -451,6 +533,8 @@ function App({ user }) {
     setMMsg({ t:"", ok:true });
     if (shops.length>0) setMShop(shops[0].id);
     setMItem(""); setMName(""); setMQty("1"); setMPrice("");
+    const hasPurch = (purch[date.slice(0,7)]||[]).some(p => p.date === date);
+    setModalShowAdd(!hasPurch);
   };
   const getDateShops = date => {
     const m  = date.slice(0,7);
@@ -556,6 +640,35 @@ function App({ user }) {
               <Btn full onClick={()=>setTab("log")} color={IND}>＋ Log Purchase</Btn>
             </div>
           </Card>
+
+          {/* ── Quick Add ── */}
+          {topItems.length > 0 && (
+            <div style={{ marginBottom:16 }}>
+              <Lbl>Quick Add — Today</Lbl>
+              <div style={{ display:"flex", gap:10, overflowX:"auto", paddingBottom:4, WebkitOverflowScrolling:"touch" }}>
+                {topItems.map(it => {
+                  const sh = byShop(it.shopId);
+                  if (!sh) return null;
+                  const key  = `${it.shopId}||${it.itemName}`;
+                  const done = qkDone[key], loading = qkLoading[key];
+                  return (
+                    <div key={key} onClick={() => !loading && !done && quickLog(it.shopId, it.itemName, it.price)}
+                      style={{ background:done?`${GRN}22`:CARD, border:`1.5px solid ${done?GRN:BDR}`, borderRadius:14, padding:"12px 14px", cursor:loading||done?"default":"pointer", flexShrink:0, minWidth:110, textAlign:"center", transition:"border-color .2s,background .2s" }}>
+                      <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:5, marginBottom:5 }}>
+                        <div style={{ width:7, height:7, borderRadius:4, background:sh.color }} />
+                        <span style={{ fontSize:10, color:MT, fontWeight:600 }}>{sh.name}</span>
+                      </div>
+                      <div style={{ fontSize:13, fontWeight:700, color:TXT, marginBottom:3 }}>{it.itemName}</div>
+                      <div style={{ fontSize:13, color:AMB, fontWeight:700, marginBottom:8 }}>{fmt(it.price)}</div>
+                      <div style={{ fontSize:loading||done?13:18, fontWeight:700, color:done?GRN:IND }}>
+                        {loading ? "…" : done ? "✓ Added" : "＋"}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           <Lbl>{mLabel(CM)} — Shop Balances</Lbl>
           {shops.length === 0
@@ -836,6 +949,10 @@ function App({ user }) {
             <Card style={{ background:CARD2 }}>
               <Row><span style={{ color:MT, fontSize:14 }}>Month Grand Total</span><span style={{ fontSize:21, fontWeight:800 }}>{fmt(vmP.reduce((a,p)=>a+p.total,0))}</span></Row>
               <Row style={{ marginTop:6 }}><span style={{ color:MT, fontSize:13 }}>Still Owed</span><span style={{ fontSize:17, fontWeight:700, color:RED }}>{fmt(shops.reduce((a,s)=>a+sOwed(s.id,vm),0))}</span></Row>
+              <div style={{ marginTop:14, borderTop:`1px solid ${BDR}`, paddingTop:14 }}>
+                <Btn full sm outline onClick={shareMonth} color={IND}>📤 Share Monthly Summary</Btn>
+                {shareMsg && <div style={{ textAlign:"center", marginTop:8, fontSize:13, color:GRN, fontWeight:600 }}>{shareMsg}</div>}
+              </div>
             </Card>
           )}
         </div>
@@ -885,7 +1002,7 @@ function App({ user }) {
           <Card style={{ marginBottom:16 }}>
             <div style={{ fontSize:17, fontWeight:800, marginBottom:14 }}>Currency Symbol</div>
             <div style={{ display:"flex", gap:8, marginBottom:savedCurrs.length>0?14:0 }}>
-              <Inp value={currInp} onChange={setCurrInp} placeholder="Type any symbol e.g. ₹ $ € £ AED" />
+              <Inp value={currInp} onChange={setCurrInp} placeholder="Type any symbol e.g. Rs. $ € £" />
               <Btn sm onClick={()=>{const s=(currInp||"").trim(); if(s) applyCurrency(s);}} color={IND}>Save</Btn>
             </div>
             {savedCurrs.length>0 && (
@@ -978,7 +1095,11 @@ function App({ user }) {
             <div style={{ padding:"16px 18px 12px", borderBottom:`1px solid ${BDR}`, display:"flex", justifyContent:"space-between", alignItems:"center", position:"sticky", top:0, background:CARD, zIndex:1 }}>
               <div>
                 <div style={{ fontSize:17, fontWeight:800 }}>{modal.date?dLabel(modal.date):""}</div>
-                <div style={{ fontSize:12, color:MT, marginTop:2 }}>Tap × to remove · add new below</div>
+                <div style={{ fontSize:12, color:MT, marginTop:2 }}>
+                  {modalPurch.length>0
+                    ? `${modalPurch.length} item${modalPurch.length!==1?"s":""} · ${fmt(modalPurch.reduce((a,p)=>a+p.total,0))}`
+                    : "Tap ＋ below to add purchases"}
+                </div>
               </div>
               <button onClick={()=>setModal({open:false,date:""})} style={{ background:"none", border:`1px solid ${BDR}`, borderRadius:8, color:MT, cursor:"pointer", fontSize:16, padding:"5px 12px" }}>✕</button>
             </div>
@@ -1006,7 +1127,11 @@ function App({ user }) {
                   </div>
               }
               <div style={{ marginTop:16, paddingTop:16, borderTop:`1px solid ${BDR}` }}>
-                <div style={{ fontSize:15, fontWeight:700, marginBottom:14 }}>＋ Add Entry</div>
+                <div onClick={()=>setModalShowAdd(v=>!v)} style={{ fontSize:15, fontWeight:700, marginBottom:modalShowAdd?14:0, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+                  <span>＋ Add Entry</span>
+                  <span style={{ fontSize:18, color:MT, transform:modalShowAdd?"rotate(180deg)":"none", transition:"transform .2s", display:"inline-block" }}>▾</span>
+                </div>
+                {modalShowAdd && <>
                 <Lbl>Shop</Lbl>
                 <Sel value={mShop} onChange={v=>{setMShop(v);setMItem("");setMPrice("");}} style={{ marginBottom:12 }}>
                   <option value="">Select shop…</option>
@@ -1036,11 +1161,23 @@ function App({ user }) {
                   </div>
                 )}
                 {shops.length===0 && <div style={{ color:MT, fontSize:13, textAlign:"center" }}>Add shops in Settings first.</div>}
+                </>}
               </div>
             </div>
           </div>
         </div>
       )}
+
+      {/* ── undo toast ── */}
+      {undoQueue.length > 0 && (() => {
+        const u = undoQueue[undoQueue.length - 1];
+        return (
+          <div style={{ position:"fixed", bottom:80, left:"50%", transform:"translateX(-50%)", width:"calc(100% - 32px)", maxWidth:448, background:CARD, border:`1px solid ${BDR}`, borderRadius:14, padding:"12px 16px", display:"flex", alignItems:"center", justifyContent:"space-between", zIndex:300, boxShadow:"0 4px 24px rgba(0,0,0,0.35)" }}>
+            <span style={{ fontSize:14, color:TXT }}>Deleted <b style={{ color:RED }}>{u.entry.itemName}</b></span>
+            <button onClick={()=>undoDel(u)} style={{ background:IND, border:"none", borderRadius:8, color:"#fff", padding:"6px 18px", fontSize:13, fontWeight:700, cursor:"pointer" }}>Undo</button>
+          </div>
+        );
+      })()}
 
       {/* ── bottom nav ── */}
       <div style={{ position:"fixed", bottom:0, left:"50%", transform:"translateX(-50%)", width:"100%", maxWidth:480, background:CARD, borderTop:`1px solid ${BDR}`, display:"flex", zIndex:100, boxSizing:"border-box" }}>
